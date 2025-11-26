@@ -7,6 +7,11 @@ wget -O hy2.sh https://raw.githubusercontent.com/zrlhk/alpine-hysteria2/main/hy2
 ```
 重复执行，会覆盖密码。  
 
+借助deepseek优化后的一键脚本
+```
+wget -O hy2.sh https://raw.githubusercontent.com/pytouch377/alpine-hysteria2/main/hy2.sh  && sh hy2.sh
+```
+
 ## 说明：  
 配置文件：/etc/hysteria/config.yaml  
 使用自签名证书，默认端口40443，安全tls，SNI为： bing.com  
