@@ -110,7 +110,7 @@ quic:
 ignoreClientBandwidth: true
 
 bandwidth:
-  up: 280 mbps
+  up: 290 mbps
   down: 60 mbps
 
 masquerade:
@@ -205,7 +205,7 @@ cat > /etc/logrotate.d/hysteria << 'EOF'
 /var/log/hysteria/*.log {
     daily
     missingok
-    rotate 3
+    rotate 2
     compress
     notifempty
     copytruncate
