@@ -105,6 +105,9 @@ openssl req -x509 -nodes -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
 chmod 600 /etc/hysteria/server.key
 chmod 644 /etc/hysteria/server.crt
 
+# 设置正确的文件所有权
+chown hysteria:hysteria /etc/hysteria/server.key /etc/hysteria/server.crt
+
 # 写入配置文件（在目录创建后）
 log_info "生成配置文件..."
 cat > /etc/hysteria/config.yaml << EOF
@@ -154,6 +157,10 @@ resolver:
 log:
   level: error
 EOF
+
+# 设置配置文件权限
+chown hysteria:hysteria /etc/hysteria/config.yaml
+chmod 644 /etc/hysteria/config.yaml
 
 # 配置资源限制
 log_info "配置资源限制..."
@@ -335,8 +342,15 @@ rc-update add hysteria default 2>/dev/null || log_warn "添加到自启动失败
 sleep 3
 
 # 验证安装
+log_info "检查服务状态..."
+
+# 检查服务状态
+SERVICE_STATUS=$(/etc/init.d/hysteria status 2>&1)
+echo "$SERVICE_STATUS"
+
+# 检查进程
 if ps aux | grep -v grep | grep -q hysteria; then
-    log_info "✅ 服务运行正常"
+    log_info "✅ 进程运行正常"
     
     # 测试端口监听
     if ss -tulpn 2>/dev/null | grep -q $PORT || netstat -tulpn 2>/dev/null | grep -q $PORT; then
@@ -345,9 +359,53 @@ if ps aux | grep -v grep | grep -q hysteria; then
         log_warn "⚠️ 端口未检测到，但进程运行中"
     fi
 else
-    log_error "❌ 服务启动失败"
-    log_info "请检查: tail -f /var/log/hysteria/error.log"
-    exit 1
+    log_error "❌ 进程未运行"
+    
+    # 详细诊断
+    log_info "进行详细诊断..."
+    
+    # 检查配置文件
+    if [ -f /etc/hysteria/config.yaml ]; then
+        log_info "配置文件存在"
+    else
+        log_error "配置文件不存在"
+    fi
+    
+    # 检查证书文件
+    if [ -f /etc/hysteria/server.crt ] && [ -f /etc/hysteria/server.key ]; then
+        log_info "证书文件存在"
+    else
+        log_error "证书文件缺失"
+    fi
+    
+    # 手动测试启动
+    log_info "尝试手动启动..."
+    chown -R hysteria:hysteria /etc/hysteria /var/log/hysteria
+    
+    # 直接运行测试
+    echo "测试命令: sudo -u hysteria /usr/local/bin/hysteria server --config /etc/hysteria/config.yaml"
+    timeout 10 sudo -u hysteria /usr/local/bin/hysteria server --config /etc/hysteria/config.yaml &
+    TEST_PID=$!
+    sleep 3
+    
+    if kill -0 $TEST_PID 2>/dev/null; then
+        log_info "手动启动成功，停止测试进程"
+        kill $TEST_PID 2>/dev/null
+        
+        # 重新启动服务
+        /etc/init.d/hysteria restart
+        sleep 3
+        
+        if ps aux | grep -v grep | grep -q hysteria; then
+            log_info "✅ 服务重启成功"
+        else
+            log_error "服务仍无法启动"
+        fi
+    else
+        log_error "手动启动也失败，检查配置文件"
+        echo "配置文件内容:"
+        head -20 /etc/hysteria/config.yaml
+    fi
 fi
 
 # 显示配置信息
