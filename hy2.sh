@@ -1,10 +1,9 @@
-#!/bin/sh
+#!/bin/bash
 
 # 颜色定义
-RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
+RED='\033[0;31m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
@@ -12,115 +11,96 @@ NC='\033[0m'
 log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
-log_debug() { echo -e "${CYAN}[DEBUG]${NC} $1"; }
-log_result() { echo -e "${BLUE}[RESULT]${NC} $1"; }
 
-# 错误处理
 set -e
 
-log_info "开始安装 Hysteria2 (轻量优化版 + 混淆)"
+log_info "开始安装 Hysteria2 (精简优化版)"
 
-# 安装必要软件（最小化）
+# 安装必要软件
 log_info "安装系统依赖..."
-apk update
-apk add --no-cache wget openssl curl ca-certificates
+apk update && apk add wget openssl
 
 # 生成随机密码
-generate_random_password() {
-  dd if=/dev/urandom bs=18 count=1 status=none | base64 | tr -d '/+=' | cut -c1-16
+generate_password() {
+    dd if=/dev/urandom bs=18 count=1 2>/dev/null | base64 | tr -d '/+=' | cut -c1-16
 }
 
-# 生成配置用的密码
-MAIN_PASS="$(generate_random_password)"
-OBFS_PASS="$(generate_random_password)"
+MAIN_PASS=$(generate_password)
+OBFS_PASS=$(generate_password)
 
-# 预先获取一次服务器公网IP，供后续显示和链接使用（过滤掉返回HTML的情况）
-RAW_IP=$(curl -s --max-time 5 -4 https://api.ip.sb/ip || curl -s --max-time 5 -4 https://api.ipify.org || echo "")
-SERVER_IP=$(printf '%s' "$RAW_IP" | tr -d '\r\n' | grep -Eo '^[0-9]{1,3}(\.[0-9]{1,3}){3}$' || echo "")
+# 配置BBR
+configure_bbr() {
+    if grep -q "bbr" /proc/sys/net/ipv4/tcp_congestion_control 2>/dev/null; then
+        log_info "BBR 已启用"
+        return 0
+    fi
+    
+    cat >> /etc/sysctl.conf << 'EOF'
+net.ipv4.tcp_congestion_control = bbr
+net.ipv4.tcp_rmem = 4096 87380 67108864
+net.ipv4.tcp_wmem = 4096 65536 67108864
+net.core.somaxconn = 1024
+EOF
 
-log_debug "生成认证密码: $MAIN_PASS"
-log_debug "生成混淆密码: $OBFS_PASS"
+    sysctl -p >/dev/null 2>&1 && log_info "BBR 配置完成"
+}
 
-## 已移除 BBR 调优：对 Hysteria2 UDP 通道影响极小，保持系统默认即可
+configure_bbr
 
-# 完整优化配置
-echo_hysteria_config_yaml() {
-  cat << EOF
+# Hysteria2配置
+cat > /etc/hysteria/config.yaml << EOF
 listen: :40443
 
-# 使用自签名证书
 tls:
   cert: /etc/hysteria/server.crt
   key: /etc/hysteria/server.key
 
-# 认证配置
 auth:
   type: password
   password: $MAIN_PASS
 
-# 混淆配置（增强隐蔽性）
 obfs:
   type: salamander
   salamander:
     password: $OBFS_PASS
 
-# 个人使用优化的QUIC配置（适配 128M 内存 + 300M 家宽）
 quic:
-  initStreamReceiveWindow: 16777216    # 16MB - 单连接足够跑高速
-  maxStreamReceiveWindow: 33554432     # 32MB 上限
-  initConnReceiveWindow: 33554432      # 32MB - 多流量合计初始窗口
-  maxConnReceiveWindow: 67108864       # 64MB 上限，兼顾突发
-  maxIdleTimeout: 60s                  # 延长超时避免频繁重连
-  keepAlivePeriod: 20s
-  maxIncomingStreams: 256              # 单人使用 256 足够
+  initStreamReceiveWindow: 33554432
+  maxStreamReceiveWindow: 33554432
+  initConnReceiveWindow: 67108864
+  maxConnReceiveWindow: 67108864
+  maxIdleTimeout: 60s
 
-# 禁用客户端带宽欺骗 (节省内存)
 ignoreClientBandwidth: true
 
-# 带宽限制：尽量吃满 300M 家宽，下行更保守避免占满上行
 bandwidth:
-  up: 300 mbps      # 服务端上传 = 客户端下载 (300Mbps)
-  down: 60 mbps     # 服务端下载 = 客户端上传 (60Mbps)
+  up: 200 mbps
+  down: 50 mbps
 
-# 传输优化
-transport:
-  udp:
-    hopInterval: 30s
-
-# 伪装配置
 masquerade:
   type: proxy
   proxy:
     url: https://www.bing.com/
     rewriteHost: true
 
-# DNS解析配置
 resolver:
   type: udp
   udp:
     addr: 8.8.8.8:53
-    timeout: 3s
 
-# 日志配置 (只记录错误，大幅减少日志量)
 log:
-  level: error
-  timestamp: true
+  level: info
 EOF
-}
 
-# 个人使用服务配置
-echo_hysteria_autoStart(){
-  cat << 'EOF'
+# 服务文件
+cat > /etc/init.d/hysteria << 'EOF'
 #!/sbin/openrc-run
 
 name="hysteria"
-description="Hysteria2 Proxy Server (Personal Use Optimized)"
 command="/usr/local/bin/hysteria"
 command_args="server --config /etc/hysteria/config.yaml"
-command_background="yes"
+command_background=true
 pidfile="/var/run/hysteria.pid"
-output_log="/var/log/hysteria/output.log"
-error_log="/var/log/hysteria/error.log"
 
 depend() {
     need net
@@ -129,182 +109,90 @@ depend() {
 
 start_pre() {
     checkpath --directory --mode 0755 /var/log/hysteria 2>/dev/null || mkdir -p /var/log/hysteria
-    if [ ! -f /etc/hysteria/config.yaml ]; then
-        echo "错误：配置文件不存在"
-        return 1
-    fi
-}
-
-start_post() {
-    sleep 3
-    if [ -f "/var/run/hysteria.pid" ] && kill -0 $(cat /var/run/hysteria.pid) 2>/dev/null; then
-        echo "Hysteria2 启动成功 (完整优化版)"
-    else
-        echo "Hysteria2 启动可能失败，请检查日志"
-        return 1
-    fi
-}
-
-stop_post() {
-    [ -f "/var/run/hysteria.pid" ] && rm -f /var/run/hysteria.pid
-    return 0
 }
 EOF
-}
 
-# 生成v2rayN导入链接
-generate_v2rayn_links() {
-    log_info "生成 v2rayN 导入链接..."
-
-    # 使用预先获取的服务器公网IP
-    SERVER_IP_DISPLAY=${SERVER_IP:-"你的服务器IP"}
-
-    # 标准Hysteria2链接
-    HY2_LINK="hysteria2://${MAIN_PASS}@${SERVER_IP_DISPLAY}:40443/?insecure=1&sni=www.bing.com&obfs=salamander&obfs-password=${OBFS_PASS}#Hysteria2-服务器"
-
-    echo
-    log_result "=== v2rayN 导入信息 ==="
-    echo
-    log_result "1. 直接配置信息:"
-    echo "   地址: $SERVER_IP_DISPLAY"
-    echo "   端口: 40443"
-    echo "   密码: $MAIN_PASS"
-    echo "   混淆: salamander"
-    echo "   混淆密码: $OBFS_PASS"
-    echo "   SNI: www.bing.com"
-    echo "   跳过证书验证: 是"
-    echo
-    log_result "2. 一键导入链接:"
-    echo "   $HY2_LINK"
-    echo
-    log_result "使用方法:"
-    echo "   - 复制『一键导入链接』在v2rayN中右键→从剪贴板导入URL"
-    echo "   - 或手动填写『直接配置信息』"
-}
-
-# 根据架构选择二进制文件
-log_info "检测系统架构..."
+# 根据架构下载
 ARCH=$(uname -m)
 case $ARCH in
-    x86_64) 
-        HY_URL="https://github.com/apernet/hysteria/releases/latest/download/hysteria-linux-amd64"
-        ARCH_NAME="amd64"
-        ;;
-    aarch64)
-        HY_URL="https://github.com/apernet/hysteria/releases/latest/download/hysteria-linux-arm64"
-        ARCH_NAME="arm64"
-        ;;
-    armv7l)
-        HY_URL="https://github.com/apernet/hysteria/releases/latest/download/hysteria-linux-arm"
-        ARCH_NAME="armv7"
-        ;;
-    *)
-        log_error "不支持的架构: $ARCH"
-        exit 1
-        ;;
+    x86_64) URL="https://github.com/apernet/hysteria/releases/latest/download/hysteria-linux-amd64" ;;
+    aarch64) URL="https://github.com/apernet/hysteria/releases/latest/download/hysteria-linux-arm64" ;;
+    armv7l) URL="https://github.com/apernet/hysteria/releases/latest/download/hysteria-linux-arm" ;;
+    *) log_error "不支持的架构: $ARCH"; exit 1 ;;
 esac
 
-log_info "架构: $ARCH_NAME, 下载 Hysteria2..."
-wget -O /usr/local/bin/hysteria "$HY_URL" --progress=bar:force 2>&1 | tail -f -n +2
+log_info "下载 Hysteria2..."
+wget -q -O /usr/local/bin/hysteria "$URL" --no-check-certificate
+chmod +x /usr/local/bin/hysteria
 
-if [ ! -f /usr/local/bin/hysteria ]; then
-    log_error "下载失败，请检查网络连接"
+# 创建目录和证书
+mkdir -p /etc/hysteria /var/log/hysteria
+
+openssl req -x509 -nodes -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+    -keyout /etc/hysteria/server.key -out /etc/hysteria/server.crt \
+    -subj "/CN=www.bing.com" -days 36500 >/dev/null 2>&1
+
+chmod 600 /etc/hysteria/server.key
+
+# 配置日志轮转
+cat > /etc/logrotate.d/hysteria << 'EOF'
+/var/log/hysteria/*.log {
+    daily
+    missingok
+    rotate 3
+    compress
+    notifempty
+    copytruncate
+    maxsize 2M
+}
+EOF
+
+# 启动服务
+chmod +x /etc/init.d/hysteria
+pkill hysteria 2>/dev/null || true
+sleep 2
+
+rc-update add hysteria default 2>/dev/null || true
+/etc/init.d/hysteria start
+
+sleep 3
+
+# 验证安装
+if ps aux | grep -v grep | grep -q hysteria; then
+    log_info "✅ 服务运行正常"
+else
+    log_error "❌ 服务启动失败"
     exit 1
 fi
 
-chmod +x /usr/local/bin/hysteria
-log_info "Hysteria2 下载完成"
-
-# 创建配置目录
-log_info "创建配置目录..."
-mkdir -p /etc/hysteria/
-mkdir -p /var/log/hysteria
-
-# 生成证书
-log_info "生成TLS证书..."
-openssl req -x509 -nodes -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
-    -keyout /etc/hysteria/server.key \
-    -out /etc/hysteria/server.crt \
-    -subj "/CN=www.bing.com" \
-    -days 36500
-
-# 设置证书权限
-chmod 600 /etc/hysteria/server.key
-chmod 644 /etc/hysteria/server.crt
-log_info "TLS证书生成完成"
-
-# 写入配置文件
-log_info "生成配置文件..."
-echo_hysteria_config_yaml > /etc/hysteria/config.yaml
-
-# 写入服务文件
-log_info "配置系统服务..."
-echo_hysteria_autoStart > /etc/init.d/hysteria
-chmod +x /etc/init.d/hysteria
-
-# 停止可能运行的实例
-log_info "停止现有服务..."
-if command -v rc-service >/dev/null 2>&1; then
-    rc-service hysteria stop 2>/dev/null || true
-fi
-sleep 2
-
-# 启用并启动服务
-log_info "启动Hysteria2服务..."
-rc-update add hysteria default 2>/dev/null || log_warn "服务添加自启动失败，但继续安装"
-/etc/init.d/hysteria start
-
-# 显示安装结果
+# 显示配置信息
 echo
 echo "================================================================================"
 log_info "🎉 Hysteria2 安装完成！"
 echo
-echo "📡 服务器信息："
-echo "  服务器IP: ${SERVER_IP:-请手动查询}"
-echo "  端口: 40443"
-echo "  认证密码: $MAIN_PASS"
+echo -e "${BLUE}连接信息：${NC}"
+echo "  服务器: 你的服务器IP:40443"
+echo "  密码: $MAIN_PASS"
 echo "  混淆密码: $OBFS_PASS"
-echo "  TLS SNI: www.bing.com"
+echo "  SNI: www.bing.com"
 echo
-echo "📁 文件位置："
-echo "  配置文件: /etc/hysteria/config.yaml"
-echo "  证书文件: /etc/hysteria/server.crt"  
-echo "  私钥文件: /etc/hysteria/server.key"
-echo "  日志文件: /var/log/hysteria/"
+echo -e "${BLUE}v2rayN 一键导入：${NC}"
+echo "hysteria2://${MAIN_PASS}@你的服务器IP:40443/?insecure=1&sni=www.bing.com&obfs=salamander&obfs-password=${OBFS_PASS}#Hysteria2"
 echo
-echo "⚙️  服务管理："
-echo "  启动: rc-service hysteria start"
-echo "  停止: rc-service hysteria stop"
-echo "  重启: rc-service hysteria restart"
-echo "  状态: rc-service hysteria status"
-echo
-echo "🚀 性能特性："
-echo "  带宽限制: 300Mbps下载 / 60Mbps上传"
-echo "  混淆隐藏: salamander (已启用)"
-echo "  日志级别: error（仅记录错误，减少磁盘占用）"
-echo "  内存优化: 适配 128M 小鸡的 QUIC 窗口"
-echo
+echo -e "${BLUE}服务管理：${NC}"
+echo "  rc-service hysteria start|stop|restart|status"
 echo "================================================================================"
 
-# 生成v2rayN导入链接
-generate_v2rayn_links
-
-# 保存配置信息到文件
-cat > /root/hysteria2-config.txt << EOF
-Hysteria2 服务器配置信息
-安装时间: $(date)
-服务器IP: ${SERVER_IP:-请手动查询}
-端口: 40443
-认证密码: $MAIN_PASS
+# 保存配置
+cat > /root/hysteria-config.txt << EOF
+Hysteria2 配置信息
+服务器: 你的服务器IP:40443
+密码: $MAIN_PASS
 混淆密码: $OBFS_PASS
-TLS SNI: www.bing.com
+SNI: www.bing.com
 
-v2rayN 一键导入链接:
-hysteria2://${MAIN_PASS}@${SERVER_IP:-你的服务器IP}:40443/?insecure=1&sni=www.bing.com&obfs=salamander&obfs-password=${OBFS_PASS}#Hysteria2-服务器
-
-配置备份位置: /root/hysteria2-config.txt
+v2rayN链接:
+hysteria2://${MAIN_PASS}@你的服务器IP:40443/?insecure=1&sni=www.bing.com&obfs=salamander&obfs-password=${OBFS_PASS}#Hysteria2
 EOF
 
-log_info "配置已备份到: /root/hysteria2-config.txt"
-log_info "安装完成！建议重启服务器测试完整功能"
-log_info "重启命令: reboot"
+log_info "配置已保存到: /root/hysteria-config.txt"
