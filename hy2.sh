@@ -251,11 +251,21 @@ echo "  混淆密码: $OBFS_PASS"
 echo "  SNI: www.bing.com"
 echo
 echo -e "${BLUE}v2rayN 一键导入：${NC}"
-# 智能获取服务器IP
-SERVER_IP=$(curl -s -4 --max-time 5 ifconfig.co 2>/dev/null || \
-           curl -s -4 --max-time 5 api.ipify.org 2>/dev/null || \
-           curl -s -4 --max-time 5 checkip.amazonaws.com 2>/dev/null | tr -d '\n' || \
-           echo "你的服务器IP")
+# 智能获取服务器IP（过滤HTML响应）
+get_server_ip() {
+    local ip
+    # 尝试多个IP服务，过滤HTML响应
+    for service in "api.ipify.org" "checkip.amazonaws.com" "ipinfo.io/ip" "icanhazip.com"; do
+        ip=$(curl -s -4 --max-time 3 "$service" 2>/dev/null | grep -Eo '^[0-9]{1,3}(\.[0-9]{1,3}){3}$' | head -1)
+        if [ -n "$ip" ]; then
+            echo "$ip"
+            return 0
+        fi
+    done
+    echo "你的服务器IP"
+}
+
+SERVER_IP=$(get_server_ip)
 echo "hysteria2://${MAIN_PASS}@${SERVER_IP}:40443/?insecure=1&sni=www.bing.com&obfs=salamander&obfs-password=${OBFS_PASS}#Hysteria2-300M"
 echo
 echo -e "${BLUE}服务管理：${NC}"
@@ -278,7 +288,7 @@ log_info "配置已保存到: /root/hysteria-config.txt"
 echo
 log_info "🚀 性能优化提示:"
 echo "  - QUIC窗口: 8MB-32MB (适配128M内存)"
-echo "  - 带宽限制: 280M下行/60M上行 (适配300M家宽)"
+echo "  - 带宽限制: 290M下行/60M上行 (适配300M家宽)"
 echo "  - 日志级别: error (减少磁盘占用)"
 echo "  - BBR缓冲区: 16MB (内存优化)"
 log_info "安装完成！建议重启后测试"
