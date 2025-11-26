@@ -464,3 +464,14 @@ echo "  - CPU限制: 90%使用率 + 优先级降低"
 echo "  - 进程限制: 最多100个子进程"
 echo "  - 监控机制: 每2分钟检查资源使用"
 log_info "安装完成！资源保护已启用"
+
+# 如果服务未运行，提供手动诊断命令
+if ! ps aux | grep -v grep | grep -q hysteria; then
+    echo
+    log_warn "⚠️ 服务未运行，请手动诊断:"
+    echo "1. 检查服务状态: rc-service hysteria status"
+    echo "2. 手动启动测试: sudo -u hysteria /usr/local/bin/hysteria server --config /etc/hysteria/config.yaml"
+    echo "3. 检查配置文件: cat /etc/hysteria/config.yaml"
+    echo "4. 检查文件权限: ls -la /etc/hysteria/"
+    echo "5. 重新启动: rc-service hysteria restart"
+fi
