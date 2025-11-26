@@ -424,18 +424,6 @@ else
     fi
 fi
 
-# 显示配置信息
-echo
-echo "================================================================================"
-log_info "🎉 Hysteria2 安装完成！"
-echo
-echo -e "${BLUE}连接信息：${NC}"
-echo "  服务器: 你的服务器IP:$PORT"
-echo "  密码: $MAIN_PASS"
-echo "  混淆密码: $OBFS_PASS"
-echo "  SNI: www.bing.com"
-echo
-echo -e "${BLUE}v2rayN 一键导入：${NC}"
 # 智能获取服务器IP（过滤HTML响应）
 get_server_ip() {
     local ip
@@ -451,6 +439,19 @@ get_server_ip() {
 }
 
 SERVER_IP=$(get_server_ip)
+
+# 显示配置信息
+echo
+echo "================================================================================"
+log_info "🎉 Hysteria2 安装完成！"
+echo
+echo -e "${BLUE}连接信息：${NC}"
+echo "  服务器: ${SERVER_IP}:$PORT"
+echo "  密码: $MAIN_PASS"
+echo "  混淆密码: $OBFS_PASS"
+echo "  SNI: www.bing.com"
+echo
+echo -e "${BLUE}v2rayN 一键导入：${NC}"
 echo "hysteria2://${MAIN_PASS}@${SERVER_IP}:$PORT/?insecure=1&sni=www.bing.com&obfs=salamander&obfs-password=${OBFS_PASS}#Hysteria2-300M"
 echo
 echo -e "${BLUE}服务管理：${NC}"
