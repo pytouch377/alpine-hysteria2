@@ -197,7 +197,7 @@ start_pre() {
     checkpath --directory --mode 0755 --owner hysteria:hysteria /var/log/hysteria 2>/dev/null || mkdir -p /var/log/hysteria
     checkpath --directory --mode 0755 --owner hysteria:hysteria /etc/hysteria
     
-    # 设置CPU限制 (最多使用50%CPU)
+    # 设置CPU限制 (最多使用90%CPU)
     if command -v cpulimit >/dev/null 2>&1; then
         echo "CPU限制已启用"
     fi
@@ -207,8 +207,8 @@ start_post() {
     # 应用CPU限制
     if command -v cpulimit >/dev/null 2>&1 && [ -f "$pidfile" ]; then
         PID=$(cat "$pidfile")
-        cpulimit -p "$PID" -l 50 >/dev/null 2>&1 &
-        echo "已应用50%CPU限制"
+        cpulimit -p "$PID" -l 90 >/dev/null 2>&1 &
+        echo "已应用90%CPU限制"
     fi
 }
 EOF
@@ -284,8 +284,8 @@ cat > /usr/local/bin/hysteria-monitor << 'EOF'
 # Hysteria2 资源监控脚本
 
 PID_FILE="/var/run/hysteria.pid"
-MAX_MEM_MB=80  # 最大内存使用80MB
-MAX_CPU=70     # 最大CPU使用70%
+MAX_MEM_MB=115  # 最大内存使用115MB (90% of 128MB)
+MAX_CPU=90      # 最大CPU使用90%
 
 if [ ! -f "$PID_FILE" ]; then
     exit 0
@@ -396,7 +396,7 @@ log_info "🚀 资源保护配置:"
 echo "  - QUIC窗口: 2MB-8MB (保守配置)"
 echo "  - 带宽限制: 200M下行/50M上行 (防止资源耗尽)"
 echo "  - 内存限制: 64MB软限制/128MB硬限制"
-echo "  - CPU限制: 50%使用率 + 优先级降低"
+echo "  - CPU限制: 90%使用率 + 优先级降低"
 echo "  - 进程限制: 最多100个子进程"
 echo "  - 监控机制: 每2分钟检查资源使用"
 log_info "安装完成！资源保护已启用"
