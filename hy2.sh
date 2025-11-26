@@ -46,13 +46,14 @@ EOF
 }
 
 echo_hysteria_autoStart(){
-  cat << EOF
+  cat << 'EOF'
 #!/sbin/openrc-run
 
 name="hysteria"
 
 command="/usr/local/bin/hysteria"
 command_args="server --config /etc/hysteria/config.yaml"
+
 
 pidfile="/var/run/${name}.pid"
 
