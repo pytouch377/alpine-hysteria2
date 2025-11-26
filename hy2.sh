@@ -47,6 +47,29 @@ generate_password() {
 MAIN_PASS=$(generate_password)
 OBFS_PASS=$(generate_password)
 
+# 端口选择
+select_port() {
+    echo
+    echo -e "${BLUE}端口配置：${NC}"
+    echo "请输入端口 (30000-60000)，直接回车随机生成:"
+    read -p "端口: " user_port
+    
+    if [ -z "$user_port" ]; then
+        # 随机生成端口
+        PORT=$((30000 + RANDOM % 30001))
+        log_info "随机生成端口: $PORT"
+    elif [ "$user_port" -ge 30000 ] && [ "$user_port" -le 60000 ] 2>/dev/null; then
+        PORT=$user_port
+        log_info "使用指定端口: $PORT"
+    else
+        log_error "端口范围错误，使用随机端口"
+        PORT=$((30000 + RANDOM % 30001))
+        log_info "随机生成端口: $PORT"
+    fi
+}
+
+select_port
+
 # 配置BBR
 configure_bbr() {
     if grep -q "bbr" /proc/sys/net/ipv4/tcp_congestion_control 2>/dev/null; then
@@ -83,7 +106,7 @@ chmod 644 /etc/hysteria/server.crt
 # 写入配置文件（在目录创建后）
 log_info "生成配置文件..."
 cat > /etc/hysteria/config.yaml << EOF
-listen: :40443
+listen: :$PORT
 
 tls:
   cert: /etc/hysteria/server.crt
@@ -228,7 +251,7 @@ if ps aux | grep -v grep | grep -q hysteria; then
     log_info "✅ 服务运行正常"
     
     # 测试端口监听
-    if ss -tulpn 2>/dev/null | grep -q 40443 || netstat -tulpn 2>/dev/null | grep -q 40443; then
+    if ss -tulpn 2>/dev/null | grep -q $PORT || netstat -tulpn 2>/dev/null | grep -q $PORT; then
         log_info "✅ 端口监听正常"
     else
         log_warn "⚠️ 端口未检测到，但进程运行中"
@@ -245,7 +268,7 @@ echo "==========================================================================
 log_info "🎉 Hysteria2 安装完成！"
 echo
 echo -e "${BLUE}连接信息：${NC}"
-echo "  服务器: 你的服务器IP:40443"
+echo "  服务器: 你的服务器IP:$PORT"
 echo "  密码: $MAIN_PASS"
 echo "  混淆密码: $OBFS_PASS"
 echo "  SNI: www.bing.com"
@@ -266,7 +289,7 @@ get_server_ip() {
 }
 
 SERVER_IP=$(get_server_ip)
-echo "hysteria2://${MAIN_PASS}@${SERVER_IP}:40443/?insecure=1&sni=www.bing.com&obfs=salamander&obfs-password=${OBFS_PASS}#Hysteria2-300M"
+echo "hysteria2://${MAIN_PASS}@${SERVER_IP}:$PORT/?insecure=1&sni=www.bing.com&obfs=salamander&obfs-password=${OBFS_PASS}#Hysteria2-300M"
 echo
 echo -e "${BLUE}服务管理：${NC}"
 echo "  rc-service hysteria start|stop|restart|status"
@@ -275,13 +298,13 @@ echo "==========================================================================
 # 保存配置
 cat > /root/hysteria-config.txt << EOF
 Hysteria2 配置信息
-服务器: ${SERVER_IP}:40443
+服务器: ${SERVER_IP}:$PORT
 密码: $MAIN_PASS
 混淆密码: $OBFS_PASS
 SNI: www.bing.com
 
 v2rayN链接:
-hysteria2://${MAIN_PASS}@${SERVER_IP}:40443/?insecure=1&sni=www.bing.com&obfs=salamander&obfs-password=${OBFS_PASS}#Hysteria2
+hysteria2://${MAIN_PASS}@${SERVER_IP}:$PORT/?insecure=1&sni=www.bing.com&obfs=salamander&obfs-password=${OBFS_PASS}#Hysteria2
 EOF
 
 log_info "配置已保存到: /root/hysteria-config.txt"
