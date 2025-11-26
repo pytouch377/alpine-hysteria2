@@ -102,11 +102,10 @@ openssl req -x509 -nodes -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
     -keyout /etc/hysteria/server.key -out /etc/hysteria/server.crt \
     -subj "/CN=www.bing.com" -days 36500 >/dev/null 2>&1
 
-chmod 600 /etc/hysteria/server.key
-chmod 644 /etc/hysteria/server.crt
-
-# 设置正确的文件所有权
+# 先设置所有权，再设置权限
 chown hysteria:hysteria /etc/hysteria/server.key /etc/hysteria/server.crt
+chmod 640 /etc/hysteria/server.key  # 让hysteria用户可读
+chmod 644 /etc/hysteria/server.crt
 
 # 写入配置文件（在目录创建后）
 log_info "生成配置文件..."
