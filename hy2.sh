@@ -157,6 +157,7 @@ EOF
 
 # 配置资源限制
 log_info "配置资源限制..."
+mkdir -p /etc/security/limits.d
 cat > /etc/security/limits.d/hysteria.conf << 'EOF'
 # Hysteria2 资源限制 (防止满载)
 hysteria soft nproc 50
