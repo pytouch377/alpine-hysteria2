@@ -34,7 +34,7 @@ if ! apk update; then
     exit 1
 fi
 
-if ! apk add wget openssl curl; then
+if ! apk add wget openssl curl cpulimit; then
     log_error "依赖包安装失败"
     exit 1
 fi
@@ -79,10 +79,12 @@ configure_bbr() {
     
     cat >> /etc/sysctl.conf << 'EOF'
 net.ipv4.tcp_congestion_control = bbr
-net.ipv4.tcp_rmem = 4096 87380 16777216
-net.ipv4.tcp_wmem = 4096 65536 16777216
-net.core.somaxconn = 512
-net.core.netdev_max_backlog = 5000
+net.ipv4.tcp_rmem = 4096 65536 8388608
+net.ipv4.tcp_wmem = 4096 65536 8388608
+net.core.somaxconn = 256
+net.core.netdev_max_backlog = 1000
+net.core.rmem_max = 8388608
+net.core.wmem_max = 8388608
 EOF
 
     sysctl -p >/dev/null 2>&1 && log_info "BBR 配置完成"
@@ -122,19 +124,21 @@ obfs:
     password: $OBFS_PASS
 
 quic:
-  initStreamReceiveWindow: 8388608
-  maxStreamReceiveWindow: 16777216
-  initConnReceiveWindow: 16777216
-  maxConnReceiveWindow: 33554432
-  maxIdleTimeout: 60s
-  keepAlivePeriod: 20s
-  maxIncomingStreams: 128
+  initStreamReceiveWindow: 2097152
+  maxStreamReceiveWindow: 4194304
+  initConnReceiveWindow: 4194304
+  maxConnReceiveWindow: 8388608
+  maxIdleTimeout: 30s
+  keepAlivePeriod: 15s
+  maxIncomingStreams: 32
+  disablePathMTUDiscovery: false
 
 ignoreClientBandwidth: true
 
+# 保守的带宽限制（防止资源耗尽）
 bandwidth:
-  up: 290 mbps
-  down: 60 mbps
+  up: 200 mbps
+  down: 50 mbps
 
 masquerade:
   type: proxy
@@ -151,7 +155,25 @@ log:
   level: error
 EOF
 
-# 服务文件
+# 配置资源限制
+log_info "配置资源限制..."
+cat > /etc/security/limits.d/hysteria.conf << 'EOF'
+# Hysteria2 资源限制 (防止满载)
+hysteria soft nproc 50
+hysteria hard nproc 100
+hysteria soft nofile 1024
+hysteria hard nofile 2048
+hysteria soft as 67108864  # 64MB内存限制
+hysteria hard as 134217728 # 128MB内存限制
+EOF
+
+# 创建hysteria用户
+if ! id hysteria >/dev/null 2>&1; then
+    adduser -D -s /bin/false hysteria
+    log_info "创建hysteria用户"
+fi
+
+# 服务文件（带资源限制）
 log_info "配置系统服务..."
 cat > /etc/init.d/hysteria << 'EOF'
 #!/sbin/openrc-run
@@ -160,7 +182,11 @@ name="hysteria"
 command="/usr/local/bin/hysteria"
 command_args="server --config /etc/hysteria/config.yaml"
 command_background=true
+command_user="hysteria:hysteria"
 pidfile="/var/run/hysteria.pid"
+
+# 资源限制 (防止CPU/内存满载)
+start_stop_daemon_args="--nicelevel 10 --rlimit-as 134217728 --rlimit-nproc 100"
 
 depend() {
     need net
@@ -168,7 +194,22 @@ depend() {
 }
 
 start_pre() {
-    checkpath --directory --mode 0755 /var/log/hysteria 2>/dev/null || mkdir -p /var/log/hysteria
+    checkpath --directory --mode 0755 --owner hysteria:hysteria /var/log/hysteria 2>/dev/null || mkdir -p /var/log/hysteria
+    checkpath --directory --mode 0755 --owner hysteria:hysteria /etc/hysteria
+    
+    # 设置CPU限制 (最多使用50%CPU)
+    if command -v cpulimit >/dev/null 2>&1; then
+        echo "CPU限制已启用"
+    fi
+}
+
+start_post() {
+    # 应用CPU限制
+    if command -v cpulimit >/dev/null 2>&1 && [ -f "$pidfile" ]; then
+        PID=$(cat "$pidfile")
+        cpulimit -p "$PID" -l 50 >/dev/null 2>&1 &
+        echo "已应用50%CPU限制"
+    fi
 }
 EOF
 
@@ -232,9 +273,50 @@ cat > /etc/logrotate.d/hysteria << 'EOF'
     compress
     notifempty
     copytruncate
-    maxsize 2M
+    maxsize 1M
 }
 EOF
+
+# 创建资源监控脚本
+log_info "配置资源监控..."
+cat > /usr/local/bin/hysteria-monitor << 'EOF'
+#!/bin/sh
+# Hysteria2 资源监控脚本
+
+PID_FILE="/var/run/hysteria.pid"
+MAX_MEM_MB=80  # 最大内存使用80MB
+MAX_CPU=70     # 最大CPU使用70%
+
+if [ ! -f "$PID_FILE" ]; then
+    exit 0
+fi
+
+PID=$(cat "$PID_FILE")
+if ! kill -0 "$PID" 2>/dev/null; then
+    exit 0
+fi
+
+# 检查内存使用
+MEM_KB=$(ps -o rss= -p "$PID" 2>/dev/null || echo 0)
+MEM_MB=$((MEM_KB / 1024))
+
+if [ "$MEM_MB" -gt "$MAX_MEM_MB" ]; then
+    echo "$(date): 内存超限 ${MEM_MB}MB > ${MAX_MEM_MB}MB, 重启服务" >> /var/log/hysteria/monitor.log
+    /etc/init.d/hysteria restart
+fi
+
+# 检查CPU使用
+CPU_USAGE=$(ps -o %cpu= -p "$PID" 2>/dev/null | cut -d. -f1 || echo 0)
+if [ "$CPU_USAGE" -gt "$MAX_CPU" ]; then
+    echo "$(date): CPU超限 ${CPU_USAGE}% > ${MAX_CPU}%, 降低优先级" >> /var/log/hysteria/monitor.log
+    renice 19 "$PID" 2>/dev/null
+fi
+EOF
+
+chmod +x /usr/local/bin/hysteria-monitor
+
+# 添加定时任务
+echo "*/2 * * * * /usr/local/bin/hysteria-monitor" | crontab -
 
 # 停止现有服务并启动
 log_info "启动Hysteria2服务..."
@@ -293,6 +375,7 @@ echo "hysteria2://${MAIN_PASS}@${SERVER_IP}:$PORT/?insecure=1&sni=www.bing.com&o
 echo
 echo -e "${BLUE}服务管理：${NC}"
 echo "  rc-service hysteria start|stop|restart|status"
+echo "  监控日志: tail -f /var/log/hysteria/monitor.log"
 echo "================================================================================"
 
 # 保存配置
@@ -309,9 +392,11 @@ EOF
 
 log_info "配置已保存到: /root/hysteria-config.txt"
 echo
-log_info "🚀 性能优化提示:"
-echo "  - QUIC窗口: 8MB-32MB (适配128M内存)"
-echo "  - 带宽限制: 290M下行/60M上行 (适配300M家宽)"
-echo "  - 日志级别: error (减少磁盘占用)"
-echo "  - BBR缓冲区: 16MB (内存优化)"
-log_info "安装完成！建议重启后测试"
+log_info "🚀 资源保护配置:"
+echo "  - QUIC窗口: 2MB-8MB (保守配置)"
+echo "  - 带宽限制: 200M下行/50M上行 (防止资源耗尽)"
+echo "  - 内存限制: 64MB软限制/128MB硬限制"
+echo "  - CPU限制: 50%使用率 + 优先级降低"
+echo "  - 进程限制: 最多100个子进程"
+echo "  - 监控机制: 每2分钟检查资源使用"
+log_info "安装完成！资源保护已启用"
