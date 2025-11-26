@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 
 # 颜色定义
 RED='\033[0;31m'
@@ -18,12 +18,12 @@ log_result() { echo -e "${BLUE}[RESULT]${NC} $1"; }
 # 错误处理
 set -e
 
-log_info "开始安装 Hysteria2 (完整优化版 + BBR + 混淆)"
+log_info "开始安装 Hysteria2 (轻量优化版 + 混淆)"
 
 # 安装必要软件（最小化）
 log_info "安装系统依赖..."
 apk update
-apk add wget openssl curl
+apk add --no-cache wget openssl curl ca-certificates
 
 # 生成随机密码
 generate_random_password() {
@@ -34,49 +34,13 @@ generate_random_password() {
 MAIN_PASS="$(generate_random_password)"
 OBFS_PASS="$(generate_random_password)"
 
+# 预先获取一次服务器公网IP，供后续显示和链接使用
+SERVER_IP=$(curl -s -4 ifconfig.co || curl -s -4 ip.sb || echo "")
+
 log_debug "生成认证密码: $MAIN_PASS"
 log_debug "生成混淆密码: $OBFS_PASS"
 
-# 配置BBR网络优化
-configure_bbr() {
-    log_info "配置BBR网络优化..."
-    
-    # 检查是否已开启BBR
-    if grep -q "bbr" /proc/sys/net/ipv4/tcp_congestion_control 2>/dev/null; then
-        log_info "BBR 已经启用"
-        return 0
-    fi
-    
-    # Alpine兼容的BBR配置
-    cat >> /etc/sysctl.conf << 'EOF'
-
-# Hysteria2 网络优化 (BBR + 缓冲区优化)
-net.ipv4.tcp_congestion_control = bbr
-net.ipv4.tcp_rmem = 4096 87380 67108864
-net.ipv4.tcp_wmem = 4096 65536 67108864
-net.ipv4.tcp_mem = 786432 1048576 1572864
-net.core.somaxconn = 1024
-net.ipv4.tcp_max_syn_backlog = 1024
-net.ipv4.tcp_fastopen = 3
-EOF
-
-    # 立即生效
-    if sysctl -p > /dev/null 2>&1; then
-        log_info "BBR 优化配置已应用"
-    else
-        log_warn "部分网络参数设置失败（Alpine兼容性问题，不影响主要功能）"
-    fi
-    
-    # 验证BBR是否启用
-    if sysctl net.ipv4.tcp_congestion_control 2>/dev/null | grep -q bbr; then
-        log_info "✅ BBR 启用成功"
-    else
-        log_warn "⚠️  BBR 启用可能失败，但继续安装"
-    fi
-}
-
-# 执行BBR优化
-configure_bbr
+## 已移除 BBR 调优：对 Hysteria2 UDP 通道影响极小，保持系统默认即可
 
 # 完整优化配置
 echo_hysteria_config_yaml() {
@@ -99,23 +63,23 @@ obfs:
   salamander:
     password: $OBFS_PASS
 
-# 个人使用优化的QUIC配置 (200Mbps性能优化)
+# 个人使用优化的QUIC配置（适配 128M 内存 + 300M 家宽）
 quic:
-  initStreamReceiveWindow: 33554432    # 32MB - 充分发挥200M性能
-  maxStreamReceiveWindow: 33554432
-  initConnReceiveWindow: 67108864      # 64MB - 为突发流量准备
-  maxConnReceiveWindow: 67108864
+  initStreamReceiveWindow: 16777216    # 16MB - 单连接足够跑高速
+  maxStreamReceiveWindow: 33554432     # 32MB 上限
+  initConnReceiveWindow: 33554432      # 32MB - 多流量合计初始窗口
+  maxConnReceiveWindow: 67108864       # 64MB 上限，兼顾突发
   maxIdleTimeout: 60s                  # 延长超时避免频繁重连
   keepAlivePeriod: 20s
-  maxIncomingStreams: 512              # 个人使用512足够
+  maxIncomingStreams: 256              # 单人使用 256 足够
 
 # 禁用客户端带宽欺骗 (节省内存)
 ignoreClientBandwidth: true
 
-# 带宽限制到200M (适配300M宽带)
+# 带宽限制：尽量吃满 300M 家宽，下行更保守避免占满上行
 bandwidth:
-  up: 200 mbps      # 服务端上传 = 客户端下载 (200Mbps)
-  down: 50 mbps     # 服务端下载 = 客户端上传 (50Mbps)
+  up: 300 mbps      # 服务端上传 = 客户端下载 (300Mbps)
+  down: 60 mbps     # 服务端下载 = 客户端上传 (60Mbps)
 
 # 传输优化
 transport:
@@ -190,24 +154,18 @@ EOF
 # 生成v2rayN导入链接
 generate_v2rayn_links() {
     log_info "生成 v2rayN 导入链接..."
-    
-    # 获取服务器公网IP
-    SERVER_IP=$(curl -s -4 ifconfig.co || curl -s -4 ip.sb || echo "你的服务器IP")
-    
+
+    # 使用预先获取的服务器公网IP
+    SERVER_IP_DISPLAY=${SERVER_IP:-"你的服务器IP"}
+
     # 标准Hysteria2链接
-    HY2_LINK="hysteria2://${MAIN_PASS}@${SERVER_IP}:40443/?insecure=1&sni=www.bing.com&obfs=salamander&obfs-password=${OBFS_PASS}#Hysteria2-服务器"
-    
-    # 编码为URL格式
-    HY2_LINK_ENCODED=$(echo -n "$HY2_LINK" | base64 | tr -d '\n')
-    
-    # 生成v2rayN订阅链接
-    V2RAYN_SUB="https://sub.xf.free.hr/convert?url=${HY2_LINK_ENCODED}&type=Hysteria2"
-    
+    HY2_LINK="hysteria2://${MAIN_PASS}@${SERVER_IP_DISPLAY}:40443/?insecure=1&sni=www.bing.com&obfs=salamander&obfs-password=${OBFS_PASS}#Hysteria2-服务器"
+
     echo
     log_result "=== v2rayN 导入信息 ==="
     echo
     log_result "1. 直接配置信息:"
-    echo "   地址: $SERVER_IP"
+    echo "   地址: $SERVER_IP_DISPLAY"
     echo "   端口: 40443"
     echo "   密码: $MAIN_PASS"
     echo "   混淆: salamander"
@@ -218,12 +176,8 @@ generate_v2rayn_links() {
     log_result "2. 一键导入链接:"
     echo "   $HY2_LINK"
     echo
-    log_result "3. v2rayN订阅链接 (推荐):"
-    echo "   $V2RAYN_SUB"
-    echo
     log_result "使用方法:"
     echo "   - 复制『一键导入链接』在v2rayN中右键→从剪贴板导入URL"
-    echo "   - 或使用『v2rayN订阅链接』添加到订阅"
     echo "   - 或手动填写『直接配置信息』"
 }
 
@@ -250,7 +204,7 @@ case $ARCH in
 esac
 
 log_info "架构: $ARCH_NAME, 下载 Hysteria2..."
-wget -O /usr/local/bin/hysteria "$HY_URL" --no-check-certificate --progress=bar:force 2>&1 | tail -f -n +2
+wget -O /usr/local/bin/hysteria "$HY_URL" --progress=bar:force 2>&1 | tail -f -n +2
 
 if [ ! -f /usr/local/bin/hysteria ]; then
     log_error "下载失败，请检查网络连接"
@@ -264,43 +218,6 @@ log_info "Hysteria2 下载完成"
 log_info "创建配置目录..."
 mkdir -p /etc/hysteria/
 mkdir -p /var/log/hysteria
-
-# === 新增日志轮转配置 ===
-configure_log_rotation() {
-    log_info "配置日志轮转..."
-    
-    # 安装logrotate
-    if ! command -v logrotate >/dev/null 2>&1; then
-        log_info "安装 logrotate..."
-        apk add logrotate > /dev/null 2>&1
-    fi
-    
-    if command -v logrotate >/dev/null 2>&1; then
-        cat > /etc/logrotate.d/hysteria << 'EOF'
-/var/log/hysteria/*.log {
-    daily
-    missingok
-    rotate 1
-    compress
-    delaycompress
-    notifempty
-    copytruncate
-    maxsize 1M
-}
-EOF
-        log_info "✅ 日志轮转配置完成 (保留7天，最大50MB)"
-    else
-        log_warn "⚠️  logrotate安装失败，使用crontab备用方案"
-        # 备用方案：crontab清理
-        (crontab -l 2>/dev/null | grep -v "hysteria"; echo "0 2 * * * find /var/log/hysteria -name \"*.log.*\" -mtime +7 -delete") | crontab -
-        log_info "✅ 日志清理任务已添加到crontab"
-    fi
-}
-
-# 执行日志轮转配置
-configure_log_rotation
-# === 日志轮转配置结束 ===
-
 
 # 生成证书
 log_info "生成TLS证书..."
@@ -326,36 +243,15 @@ chmod +x /etc/init.d/hysteria
 
 # 停止可能运行的实例
 log_info "停止现有服务..."
-pkill hysteria 2>/dev/null || true
+if command -v rc-service >/dev/null 2>&1; then
+    rc-service hysteria stop 2>/dev/null || true
+fi
 sleep 2
 
 # 启用并启动服务
 log_info "启动Hysteria2服务..."
 rc-update add hysteria default 2>/dev/null || log_warn "服务添加自启动失败，但继续安装"
-
 /etc/init.d/hysteria start
-
-# 等待并检查状态
-log_info "等待服务启动..."
-sleep 5
-
-# 验证服务状态
-log_info "验证服务状态..."
-if netstat -tulpn 2>/dev/null | grep -q 40443; then
-    log_info "✅ 服务端口监听成功"
-else
-    log_warn "⚠️  服务端口未检测到，但进程可能仍在运行"
-fi
-
-if ps aux | grep -v grep | grep -q hysteria; then
-    log_info "✅ 服务进程运行正常"
-    HY_PID=$(ps aux | grep -v grep | grep hysteria | awk '{print $2}')
-    log_debug "服务PID: $HY_PID"
-else
-    log_error "❌ 服务进程未运行"
-    log_info "请检查日志: tail -f /var/log/hysteria/error.log"
-    exit 1
-fi
 
 # 显示安装结果
 echo
@@ -363,7 +259,7 @@ echo "==========================================================================
 log_info "🎉 Hysteria2 安装完成！"
 echo
 echo "📡 服务器信息："
-echo "  服务器IP: $(curl -s -4 ifconfig.co || curl -s -4 ip.sb || echo '请手动查询')"
+echo "  服务器IP: ${SERVER_IP:-请手动查询}"
 echo "  端口: 40443"
 echo "  认证密码: $MAIN_PASS"
 echo "  混淆密码: $OBFS_PASS"
@@ -382,14 +278,11 @@ echo "  重启: rc-service hysteria restart"
 echo "  状态: rc-service hysteria status"
 echo
 echo "🚀 性能特性："
-echo "  带宽限制: 200Mbps下载 / 50Mbps上传"
-echo "  BBR优化: 已启用"
+echo "  带宽限制: 300Mbps下载 / 60Mbps上传"
 echo "  混淆隐藏: salamander (已启用)"
-echo "  内存优化: 个人使用专用"
+echo "  日志级别: error（仅记录错误，减少磁盘占用）"
+echo "  内存优化: 适配 128M 小鸡的 QUIC 窗口"
 echo
-echo "🔍 系统状态："
-echo "  BBR状态: $(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo '检测失败')"
-echo "  内存使用: $(free -m | awk 'NR==2{printf "%sMB/%sMB (%.1f%%)", $3, $2, $3*100/$2}')"
 echo "================================================================================"
 
 # 生成v2rayN导入链接
@@ -399,14 +292,14 @@ generate_v2rayn_links
 cat > /root/hysteria2-config.txt << EOF
 Hysteria2 服务器配置信息
 安装时间: $(date)
-服务器IP: $(curl -s -4 ifconfig.co || echo "请手动查询")
+服务器IP: ${SERVER_IP:-请手动查询}
 端口: 40443
 认证密码: $MAIN_PASS
 混淆密码: $OBFS_PASS
 TLS SNI: www.bing.com
 
 v2rayN 一键导入链接:
-hysteria2://${MAIN_PASS}@$(curl -s -4 ifconfig.co || echo "你的服务器IP"):40443/?insecure=1&sni=www.bing.com&obfs=salamander&obfs-password=${OBFS_PASS}#Hysteria2-服务器
+hysteria2://${MAIN_PASS}@${SERVER_IP:-你的服务器IP}:40443/?insecure=1&sni=www.bing.com&obfs=salamander&obfs-password=${OBFS_PASS}#Hysteria2-服务器
 
 配置备份位置: /root/hysteria2-config.txt
 EOF

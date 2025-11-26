@@ -7,7 +7,7 @@ wget -O hy2.sh https://raw.githubusercontent.com/zrlhk/alpine-hysteria2/main/hy2
 ```
 重复执行，会覆盖密码。  
 
-借助deepseek优化后的自用一键脚本。（针对128M小内存调优，增加混淆，BBR拥塞控制，udp参数优化，一键导入V2rayN的链接）
+借助deepseek等优化后的自用一键脚本。（针对128M小内存调优，增加混淆，udp参数优化，一键导入V2rayN的链接）
 ```
 wget -O hy2.sh https://raw.githubusercontent.com/pytouch377/alpine-hysteria2/main/hy2.sh  && sh hy2.sh
 ```
