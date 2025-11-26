@@ -136,9 +136,9 @@ resolver:
     addr: 8.8.8.8:53
     timeout: 3s
 
-# 日志配置 (info级别方便个人用户排查问题)
+# 日志配置 (只记录错误，大幅减少日志量)
 log:
-  level: info
+  level: error
   timestamp: true
 EOF
 }
@@ -264,6 +264,43 @@ log_info "Hysteria2 下载完成"
 log_info "创建配置目录..."
 mkdir -p /etc/hysteria/
 mkdir -p /var/log/hysteria
+
+# === 新增日志轮转配置 ===
+configure_log_rotation() {
+    log_info "配置日志轮转..."
+    
+    # 安装logrotate
+    if ! command -v logrotate >/dev/null 2>&1; then
+        log_info "安装 logrotate..."
+        apk add logrotate > /dev/null 2>&1
+    fi
+    
+    if command -v logrotate >/dev/null 2>&1; then
+        cat > /etc/logrotate.d/hysteria << 'EOF'
+/var/log/hysteria/*.log {
+    daily
+    missingok
+    rotate 1
+    compress
+    delaycompress
+    notifempty
+    copytruncate
+    maxsize 1M
+}
+EOF
+        log_info "✅ 日志轮转配置完成 (保留7天，最大50MB)"
+    else
+        log_warn "⚠️  logrotate安装失败，使用crontab备用方案"
+        # 备用方案：crontab清理
+        (crontab -l 2>/dev/null | grep -v "hysteria"; echo "0 2 * * * find /var/log/hysteria -name \"*.log.*\" -mtime +7 -delete") | crontab -
+        log_info "✅ 日志清理任务已添加到crontab"
+    fi
+}
+
+# 执行日志轮转配置
+configure_log_rotation
+# === 日志轮转配置结束 ===
+
 
 # 生成证书
 log_info "生成TLS证书..."
