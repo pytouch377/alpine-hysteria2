@@ -187,7 +187,7 @@ command_user="hysteria:hysteria"
 pidfile="/var/run/hysteria.pid"
 
 # 资源限制 (防止CPU/内存满载)
-start_stop_daemon_args="--nicelevel 10 --rlimit-as 134217728 --rlimit-nproc 100"
+start_stop_daemon_args="--nicelevel 10"
 
 depend() {
     need net
@@ -198,18 +198,23 @@ start_pre() {
     checkpath --directory --mode 0755 --owner hysteria:hysteria /var/log/hysteria 2>/dev/null || mkdir -p /var/log/hysteria
     checkpath --directory --mode 0755 --owner hysteria:hysteria /etc/hysteria
     
-    # 设置CPU限制 (最多使用90%CPU)
-    if command -v cpulimit >/dev/null 2>&1; then
-        echo "CPU限制已启用"
+    # 设置资源限制 (Alpine兼容方式)
+    if command -v ulimit >/dev/null 2>&1; then
+        ulimit -v 131072  # 128MB虚拟内存限制
+        ulimit -u 100     # 100个进程限制
+        echo "资源限制已设置"
     fi
 }
 
 start_post() {
     # 应用CPU限制
     if command -v cpulimit >/dev/null 2>&1 && [ -f "$pidfile" ]; then
-        PID=$(cat "$pidfile")
-        cpulimit -p "$PID" -l 90 >/dev/null 2>&1 &
-        echo "已应用90%CPU限制"
+        sleep 1  # 等待进程启动
+        PID=$(cat "$pidfile" 2>/dev/null)
+        if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
+            cpulimit -p "$PID" -l 90 >/dev/null 2>&1 &
+            echo "已应用90%CPU限制 (PID: $PID)"
+        fi
     fi
 }
 EOF
