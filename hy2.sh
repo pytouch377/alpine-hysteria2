@@ -102,8 +102,7 @@ openssl req -x509 -nodes -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
     -keyout /etc/hysteria/server.key -out /etc/hysteria/server.crt \
     -subj "/CN=www.bing.com" -days 36500 >/dev/null 2>&1
 
-# 先设置所有权，再设置权限
-chown hysteria:hysteria /etc/hysteria/server.key /etc/hysteria/server.crt
+# 先设置权限，等创建用户后再设置所有权
 chmod 640 /etc/hysteria/server.key  # 让hysteria用户可读
 chmod 644 /etc/hysteria/server.crt
 
@@ -157,8 +156,7 @@ log:
   level: error
 EOF
 
-# 设置配置文件权限
-chown hysteria:hysteria /etc/hysteria/config.yaml
+# 先设置权限，等创建用户后再设置所有权
 chmod 644 /etc/hysteria/config.yaml
 
 # 配置资源限制
@@ -179,6 +177,11 @@ if ! id hysteria >/dev/null 2>&1; then
     adduser -D -s /bin/false hysteria
     log_info "创建hysteria用户"
 fi
+
+# 现在设置文件所有权
+log_info "设置文件所有权..."
+chown -R hysteria:hysteria /etc/hysteria
+chown hysteria:hysteria /etc/hysteria/config.yaml /etc/hysteria/server.key /etc/hysteria/server.crt
 
 # 服务文件（带资源限制）
 log_info "配置系统服务..."
