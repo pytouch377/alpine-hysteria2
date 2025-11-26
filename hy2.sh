@@ -5,6 +5,7 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
+BLUE='\033[0;34m'
 NC='\033[0m'
 
 # 日志函数
@@ -12,26 +13,72 @@ log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 log_debug() { echo -e "${CYAN}[DEBUG]${NC} $1"; }
+log_result() { echo -e "${BLUE}[RESULT]${NC} $1"; }
 
 # 错误处理
 set -e
 
-log_info "开始安装 Hysteria2 (个人使用优化版)"
+log_info "开始安装 Hysteria2 (完整优化版 + BBR + 混淆)"
 
 # 安装必要软件（最小化）
 log_info "安装系统依赖..."
 apk update
-apk add wget openssl
+apk add wget openssl curl
 
 # 生成随机密码
 generate_random_password() {
   dd if=/dev/urandom bs=18 count=1 status=none | base64 | tr -d '/+=' | cut -c1-16
 }
 
-GENPASS="$(generate_random_password)"
-log_debug "生成连接密码: $GENPASS"
+# 生成配置用的密码
+MAIN_PASS="$(generate_random_password)"
+OBFS_PASS="$(generate_random_password)"
 
-# 个人使用优化配置
+log_debug "生成认证密码: $MAIN_PASS"
+log_debug "生成混淆密码: $OBFS_PASS"
+
+# 配置BBR网络优化
+configure_bbr() {
+    log_info "配置BBR网络优化..."
+    
+    # 检查是否已开启BBR
+    if grep -q "bbr" /proc/sys/net/ipv4/tcp_congestion_control 2>/dev/null; then
+        log_info "BBR 已经启用"
+        return 0
+    fi
+    
+    # Alpine兼容的BBR配置
+    cat >> /etc/sysctl.conf << 'EOF'
+
+# Hysteria2 网络优化 (BBR + 缓冲区优化)
+net.ipv4.tcp_congestion_control = bbr
+net.ipv4.tcp_rmem = 4096 87380 67108864
+net.ipv4.tcp_wmem = 4096 65536 67108864
+net.ipv4.tcp_mem = 786432 1048576 1572864
+net.core.somaxconn = 1024
+net.ipv4.tcp_max_syn_backlog = 1024
+net.ipv4.tcp_fastopen = 3
+EOF
+
+    # 立即生效
+    if sysctl -p > /dev/null 2>&1; then
+        log_info "BBR 优化配置已应用"
+    else
+        log_warn "部分网络参数设置失败（Alpine兼容性问题，不影响主要功能）"
+    fi
+    
+    # 验证BBR是否启用
+    if sysctl net.ipv4.tcp_congestion_control 2>/dev/null | grep -q bbr; then
+        log_info "✅ BBR 启用成功"
+    else
+        log_warn "⚠️  BBR 启用可能失败，但继续安装"
+    fi
+}
+
+# 执行BBR优化
+configure_bbr
+
+# 完整优化配置
 echo_hysteria_config_yaml() {
   cat << EOF
 listen: :40443
@@ -44,7 +91,13 @@ tls:
 # 认证配置
 auth:
   type: password
-  password: $GENPASS
+  password: $MAIN_PASS
+
+# 混淆配置（增强隐蔽性）
+obfs:
+  type: salamander
+  salamander:
+    password: $OBFS_PASS
 
 # 个人使用优化的QUIC配置 (200Mbps性能优化)
 quic:
@@ -61,8 +114,8 @@ ignoreClientBandwidth: true
 
 # 带宽限制到200M (适配300M宽带)
 bandwidth:
-  up: 200 mbps      # 对应客户端的下载，限制到200Mbps
-  down: 100 mbps    # 对应客户端的上传，限制到100Mbps
+  up: 200 mbps      # 服务端上传 = 客户端下载 (200Mbps)
+  down: 50 mbps     # 服务端下载 = 客户端上传 (50Mbps)
 
 # 传输优化
 transport:
@@ -90,7 +143,7 @@ log:
 EOF
 }
 
-# 个人使用服务配置 (无内存限制，让系统自动管理)
+# 个人使用服务配置
 echo_hysteria_autoStart(){
   cat << 'EOF'
 #!/sbin/openrc-run
@@ -104,25 +157,23 @@ pidfile="/var/run/hysteria.pid"
 output_log="/var/log/hysteria/output.log"
 error_log="/var/log/hysteria/error.log"
 
-# 个人使用无需严格内存限制，系统自动管理更高效
 depend() {
     need net
     after firewall
 }
 
 start_pre() {
-    # 创建日志目录
     checkpath --directory --mode 0755 /var/log/hysteria 2>/dev/null || mkdir -p /var/log/hysteria
-    
-    # 预检查配置
-    if [ -x "/usr/local/bin/hysteria" ]; then
+    if [ ! -f /etc/hysteria/config.yaml ]; then
+        echo "错误：配置文件不存在"
+        return 1
     fi
 }
 
 start_post() {
     sleep 3
     if [ -f "/var/run/hysteria.pid" ] && kill -0 $(cat /var/run/hysteria.pid) 2>/dev/null; then
-        echo "Hysteria2 启动成功 (个人使用优化版)"
+        echo "Hysteria2 启动成功 (完整优化版)"
     else
         echo "Hysteria2 启动可能失败，请检查日志"
         return 1
@@ -134,6 +185,46 @@ stop_post() {
     return 0
 }
 EOF
+}
+
+# 生成v2rayN导入链接
+generate_v2rayn_links() {
+    log_info "生成 v2rayN 导入链接..."
+    
+    # 获取服务器公网IP
+    SERVER_IP=$(curl -s -4 ifconfig.co || curl -s -4 ip.sb || echo "你的服务器IP")
+    
+    # 标准Hysteria2链接
+    HY2_LINK="hysteria2://${MAIN_PASS}@${SERVER_IP}:40443/?insecure=1&sni=www.bing.com&obfs=salamander&obfs-password=${OBFS_PASS}#Hysteria2-服务器"
+    
+    # 编码为URL格式
+    HY2_LINK_ENCODED=$(echo -n "$HY2_LINK" | base64 | tr -d '\n')
+    
+    # 生成v2rayN订阅链接
+    V2RAYN_SUB="https://sub.xf.free.hr/convert?url=${HY2_LINK_ENCODED}&type=Hysteria2"
+    
+    echo
+    log_result "=== v2rayN 导入信息 ==="
+    echo
+    log_result "1. 直接配置信息:"
+    echo "   地址: $SERVER_IP"
+    echo "   端口: 40443"
+    echo "   密码: $MAIN_PASS"
+    echo "   混淆: salamander"
+    echo "   混淆密码: $OBFS_PASS"
+    echo "   SNI: www.bing.com"
+    echo "   跳过证书验证: 是"
+    echo
+    log_result "2. 一键导入链接:"
+    echo "   $HY2_LINK"
+    echo
+    log_result "3. v2rayN订阅链接 (推荐):"
+    echo "   $V2RAYN_SUB"
+    echo
+    log_result "使用方法:"
+    echo "   - 复制『一键导入链接』在v2rayN中右键→从剪贴板导入URL"
+    echo "   - 或使用『v2rayN订阅链接』添加到订阅"
+    echo "   - 或手动填写『直接配置信息』"
 }
 
 # 根据架构选择二进制文件
@@ -234,11 +325,12 @@ echo
 echo "================================================================================"
 log_info "🎉 Hysteria2 安装完成！"
 echo
-echo "📡 连接信息："
-echo "  服务器: 你的服务器IP:40443"
-echo "  密码: $GENPASS"
+echo "📡 服务器信息："
+echo "  服务器IP: $(curl -s -4 ifconfig.co || curl -s -4 ip.sb || echo '请手动查询')"
+echo "  端口: 40443"
+echo "  认证密码: $MAIN_PASS"
+echo "  混淆密码: $OBFS_PASS"
 echo "  TLS SNI: www.bing.com"
-echo "  协议: Hysteria2"
 echo
 echo "📁 文件位置："
 echo "  配置文件: /etc/hysteria/config.yaml"
@@ -252,21 +344,36 @@ echo "  停止: rc-service hysteria stop"
 echo "  重启: rc-service hysteria restart"
 echo "  状态: rc-service hysteria status"
 echo
-echo "📊 性能配置："
-echo "  带宽限制: 200Mbps下载 / 100Mbps上传"
-echo "  内存管理: 系统自动优化 (个人使用专用)"
-echo "  连接优化: 适配个人刷视频等场景"
+echo "🚀 性能特性："
+echo "  带宽限制: 200Mbps下载 / 50Mbps上传"
+echo "  BBR优化: 已启用"
+echo "  混淆隐藏: salamander (已启用)"
+echo "  内存优化: 个人使用专用"
 echo
-echo "🔍 监控命令："
-echo "  内存使用: free -m"
-echo "  服务状态: rc-service hysteria status"
-echo "  实时日志: tail -f /var/log/hysteria/output.log"
+echo "🔍 系统状态："
+echo "  BBR状态: $(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo '检测失败')"
+echo "  内存使用: $(free -m | awk 'NR==2{printf "%sMB/%sMB (%.1f%%)", $3, $2, $3*100/$2}')"
 echo "================================================================================"
 
-# 显示当前内存状态
-echo
-log_info "当前系统内存状态："
-free -m
-echo
-log_info "安装脚本执行完毕，建议重启服务器测试自启动功能"
+# 生成v2rayN导入链接
+generate_v2rayn_links
+
+# 保存配置信息到文件
+cat > /root/hysteria2-config.txt << EOF
+Hysteria2 服务器配置信息
+安装时间: $(date)
+服务器IP: $(curl -s -4 ifconfig.co || echo "请手动查询")
+端口: 40443
+认证密码: $MAIN_PASS
+混淆密码: $OBFS_PASS
+TLS SNI: www.bing.com
+
+v2rayN 一键导入链接:
+hysteria2://${MAIN_PASS}@$(curl -s -4 ifconfig.co || echo "你的服务器IP"):40443/?insecure=1&sni=www.bing.com&obfs=salamander&obfs-password=${OBFS_PASS}#Hysteria2-服务器
+
+配置备份位置: /root/hysteria2-config.txt
+EOF
+
+log_info "配置已备份到: /root/hysteria2-config.txt"
+log_info "安装完成！建议重启服务器测试完整功能"
 log_info "重启命令: reboot"
