@@ -34,8 +34,9 @@ generate_random_password() {
 MAIN_PASS="$(generate_random_password)"
 OBFS_PASS="$(generate_random_password)"
 
-# 预先获取一次服务器公网IP，供后续显示和链接使用
-SERVER_IP=$(curl -s -4 ifconfig.co || curl -s -4 ip.sb || echo "")
+# 预先获取一次服务器公网IP，供后续显示和链接使用（过滤掉返回HTML的情况）
+RAW_IP=$(curl -s --max-time 5 -4 https://api.ip.sb/ip || curl -s --max-time 5 -4 https://api.ipify.org || echo "")
+SERVER_IP=$(printf '%s' "$RAW_IP" | tr -d '\r\n' | grep -Eo '^[0-9]{1,3}(\.[0-9]{1,3}){3}$' || echo "")
 
 log_debug "生成认证密码: $MAIN_PASS"
 log_debug "生成混淆密码: $OBFS_PASS"
