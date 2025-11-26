@@ -116,9 +116,6 @@ start_pre() {
     
     # 预检查配置
     if [ -x "/usr/local/bin/hysteria" ]; then
-        /usr/local/bin/hysteria server --config /etc/hysteria/config.yaml --test >/dev/null 2>&1 || {
-            echo "配置检查失败，但继续启动..."
-        }
     fi
 }
 
@@ -199,14 +196,6 @@ log_info "配置系统服务..."
 echo_hysteria_autoStart > /etc/init.d/hysteria
 chmod +x /etc/init.d/hysteria
 
-# 测试配置文件
-log_info "测试配置文件..."
-if /usr/local/bin/hysteria server --config /etc/hysteria/config.yaml --test >/dev/null 2>&1; then
-    log_info "配置文件测试通过"
-else
-    log_warn "配置文件语法检查失败，但继续安装"
-fi
-
 # 停止可能运行的实例
 log_info "停止现有服务..."
 pkill hysteria 2>/dev/null || true
@@ -264,7 +253,7 @@ echo "  重启: rc-service hysteria restart"
 echo "  状态: rc-service hysteria status"
 echo
 echo "📊 性能配置："
-echo "  带宽限制: 200Mbps下载 / 50Mbps上传"
+echo "  带宽限制: 200Mbps下载 / 100Mbps上传"
 echo "  内存管理: 系统自动优化 (个人使用专用)"
 echo "  连接优化: 适配个人刷视频等场景"
 echo
