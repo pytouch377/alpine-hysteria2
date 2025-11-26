@@ -28,6 +28,31 @@ generate_password() {
 MAIN_PASS=$(generate_password)
 OBFS_PASS=$(generate_password)
 
+# 安全的IP获取函数
+get_server_ip() {
+    local ip=""
+    # 尝试多个IP查询服务
+    local services=(
+        "ipinfo.io/ip"
+        "api.ipify.org"
+        "icanhazip.com"
+        "ident.me"
+        "checkip.amazonaws.com"
+    )
+    
+    for service in "${services[@]}"; do
+        ip=$(curl -s -4 --connect-timeout 5 "$service" 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$')
+        if [ -n "$ip" ]; then
+            echo "$ip"
+            return 0
+        fi
+    done
+    
+    echo "请手动查询服务器IP"
+}
+
+SERVER_IP=$(get_server_ip)
+
 # 配置BBR
 configure_bbr() {
     if grep -q "bbr" /proc/sys/net/ipv4/tcp_congestion_control 2>/dev/null; then
@@ -47,11 +72,11 @@ EOF
 
 configure_bbr
 
-# 创建目录结构（必须先创建目录！）
+# 创建目录结构
 log_info "创建目录结构..."
 mkdir -p /etc/hysteria /var/log/hysteria
 
-# 生成证书（在目录创建后）
+# 生成证书
 log_info "生成TLS证书..."
 openssl req -x509 -nodes -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
     -keyout /etc/hysteria/server.key -out /etc/hysteria/server.crt \
@@ -60,7 +85,7 @@ openssl req -x509 -nodes -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
 chmod 600 /etc/hysteria/server.key
 chmod 644 /etc/hysteria/server.crt
 
-# 写入配置文件（在目录创建后）
+# 写入配置文件
 log_info "生成配置文件..."
 cat > /etc/hysteria/config.yaml << EOF
 listen: :40443
@@ -159,7 +184,7 @@ if [ ! -f /usr/local/bin/hysteria ]; then
 fi
 
 FILE_SIZE=$(stat -c%s /usr/local/bin/hysteria 2>/dev/null || wc -c < /usr/local/bin/hysteria)
-if [ "$FILE_SIZE" -lt 5000000 ]; then  # 至少5MB
+if [ "$FILE_SIZE" -lt 5000000 ]; then
     log_error "文件大小异常，可能下载损坏: ${FILE_SIZE}字节"
     rm -f /usr/local/bin/hysteria
     exit 1
@@ -204,7 +229,6 @@ sleep 5
 if ps aux | grep -v grep | grep -q hysteria; then
     log_info "✅ 服务运行正常"
     
-    # 测试端口监听
     if netstat -tulpn 2>/dev/null | grep -q 40443; then
         log_info "✅ 端口监听正常"
     else
@@ -215,17 +239,6 @@ else
     log_info "请检查: tail -f /var/log/hysteria/error.log"
     exit 1
 fi
-
-# 获取服务器IP（安全方式）
-get_server_ip() {
-    local ip
-    ip=$(curl -s -4 --connect-timeout 5 ifconfig.co 2>/dev/null || 
-         curl -s -4 --connect-timeout 5 ip.sb 2>/dev/null || 
-         echo "您的服务器IP")
-    echo "$ip"
-}
-
-SERVER_IP=$(get_server_ip)
 
 # 生成正确的v2rayN链接
 generate_v2rayn_link() {
@@ -278,19 +291,22 @@ Hysteria2 服务器配置
 TLS SNI: www.bing.com
 
 v2rayN 一键导入链接:
-$V2RAY_LINK
+$(generate_v2rayn_link)
 
-客户端配置示例 (Clash Meta):
-- name: "Hysteria2"
-  type: hysteria2
-  server: $SERVER_IP
-  port: 40443
-  password: $MAIN_PASS
-  obfs: salamander
-  obfs-password: $OBFS_PASS
-  sni: www.bing.com
-  skip-cert-verify: true
+注意：如果IP显示"请手动查询服务器IP"，请运行以下命令获取IP：
+curl -s ipinfo.io/ip
+或
+curl -s api.ipify.org
 EOF
 
 log_info "配置已保存到: /root/hysteria-config.txt"
-log_info "安装完成！建议重启服务器测试: reboot"
+log_info "安装完成！"
+
+# 如果IP获取失败，提示用户
+if [ "$SERVER_IP" = "请手动查询服务器IP" ]; then
+    echo
+    log_warn "⚠️  无法自动获取服务器IP，请手动查询："
+    echo "  运行: curl -s ipinfo.io/ip"
+    echo "  或: curl -s api.ipify.org"
+    echo "  然后将IP填入客户端配置中"
+fi
