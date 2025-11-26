@@ -330,6 +330,20 @@ chmod +x /usr/local/bin/hysteria-monitor
 # 添加定时任务
 echo "*/2 * * * * /usr/local/bin/hysteria-monitor" | crontab -
 
+# 检查端口冲突
+log_info "检查端口冲突..."
+if netstat -tulpn 2>/dev/null | grep -q ":$PORT " || ss -tulpn 2>/dev/null | grep -q ":$PORT "; then
+    log_warn "端口 $PORT 已被占用，正在清理..."
+    
+    # 查找并终止占用进程
+    PIDS=$(lsof -ti:$PORT 2>/dev/null || fuser $PORT/udp 2>/dev/null | awk '{print $1}')
+    if [ -n "$PIDS" ]; then
+        echo "$PIDS" | xargs kill -9 2>/dev/null || true
+        log_info "已清理端口 $PORT 占用进程"
+        sleep 2
+    fi
+fi
+
 # 停止现有服务并启动
 log_info "启动Hysteria2服务..."
 pkill hysteria 2>/dev/null || true
