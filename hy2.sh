@@ -9,6 +9,86 @@ NC='\033[0m'
 
 # 日志函数
 log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
+log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
+log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+
+# 安装最小依赖
+apk add --no-cache curl openssl ca-certificates openrc chrony
+
+# 1. 配置时间同步 (关键：Hysteria 依赖准确的时间)
+echo "正在配置时间同步..."
+rc-update add chronyd default || true
+service chronyd start || echo "警告: 启动 chronyd 失败 (可能是容器权限限制)，将尝试继续..."
+# 尝试立即同步一次
+chronyc -a makestep || true
+
+# 2. 检查并添加 Swap (关键：128MB 内存必须有 Swap)
+check_and_add_swap() {
+  if [ -f /swapfile ]; then
+    echo "Swap 文件已存在，跳过创建。"
+  elif free | grep -q "Swap:.*[1-9]"; then
+    echo "系统已有 Swap，跳过创建。"
+  else
+    echo "正在创建 512MB Swap 文件..."
+    # 使用 dd 创建 512MB 文件 (512 * 1024 = 524288)
+    dd if=/dev/zero of=/swapfile bs=1024 count=524288
+    chmod 600 /swapfile
+    mkswap /swapfile
+    # 容器环境可能无法挂载 Swap，允许失败
+    if ! swapon /swapfile; then
+        echo "警告: 挂载 Swap 失败 (可能是容器权限限制)。"
+        echo "注意: 在 128MB 内存下如果没有 Swap，Hysteria 可能会不稳定。"
+        # 删除创建失败的文件
+        rm -f /swapfile
+    else
+        # 写入 fstab 实现开机挂载
+        echo "/swapfile swap swap defaults 0 0" >> /etc/fstab
+        echo "Swap 创建成功。"
+    fi
+  fi
+}
+check_and_add_swap
+
+log_info "开始安装 Hysteria2 (安全优化版)"
+
+# 安装系统依赖
+log_info "安装系统依赖..."
+apk update && apk add wget openssl
+
+# 生成随机密码
+generate_password() {
+    # 使用 tr 生成更兼容的随机密码
+    tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 16
+}
+
+MAIN_PASS=$(generate_password)
+OBFS_PASS=$(generate_password)
+
+# 安全的IP获取函数
+get_server_ip() {
+    local ip=""
+    # 尝试多个IP查询服务
+    local services="ipinfo.io/ip api.ipify.org icanhazip.com ident.me checkip.amazonaws.com"
+    
+    for service in $services; do
+        ip=$(curl -s -4 --connect-timeout 5 "$service" 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$')
+        if [ -n "$ip" ]; then
+            echo "$ip"
+            return 0
+        fi
+    done
+    
+    # 获取失败时返回空，后续处理
+    echo ""
+}
+
+SERVER_IP=$(get_server_ip)
+if [ -z "$SERVER_IP" ]; then
+    SERVER_IP="YOUR_SERVER_IP"
+fi
+
+# 3. 端口设置
+# 生成 20000-60000 之间的随机端口
 get_random_port() {
   awk -v min=20000 -v max=60000 'BEGIN{srand(); print int(min+rand()*(max-min+1))}'
 }
@@ -50,6 +130,7 @@ configure_bbr() {
         return 0
     fi
     
+    # 容器环境可能只读，允许失败
     cat >> /etc/sysctl.conf << 'EOF'
 net.ipv4.tcp_congestion_control = bbr
 net.ipv4.tcp_rmem = 4096 87380 33554432
@@ -57,7 +138,7 @@ net.ipv4.tcp_wmem = 4096 65536 33554432
 net.core.somaxconn = 1024
 EOF
 
-    sysctl -p >/dev/null 2>&1 && log_info "BBR 配置完成"
+    sysctl -p >/dev/null 2>&1 && log_info "BBR 配置完成" || log_warn "BBR 配置失败 (可能是容器限制)，跳过。"
 }
 
 configure_bbr
@@ -68,9 +149,16 @@ mkdir -p /etc/hysteria /var/log/hysteria
 
 # 生成证书
 log_info "生成TLS证书..."
-openssl req -x509 -nodes -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
-    -keyout /etc/hysteria/server.key -out /etc/hysteria/server.crt \
-    -subj "/CN=www.bing.com" -days 36500 >/dev/null 2>&1
+# 使用两步法生成证书，兼容性更好，并显示错误信息
+if ! openssl ecparam -name prime256v1 -genkey -noout -out /etc/hysteria/server.key; then
+    log_error "生成私钥失败！"
+    exit 1
+fi
+
+if ! openssl req -x509 -new -key /etc/hysteria/server.key -sha256 -days 36500 -out /etc/hysteria/server.crt -subj "/CN=www.bing.com"; then
+    log_error "生成证书失败！"
+    exit 1
+fi
 
 chmod 600 /etc/hysteria/server.key
 chmod 644 /etc/hysteria/server.crt
@@ -166,6 +254,10 @@ if ! wget -q -O /usr/local/bin/hysteria "$URL" --no-check-certificate; then
     log_error "下载失败，请检查网络连接"
     exit 1
 fi
+chmod +x /usr/local/bin/hysteria
+
+# 启动服务
+service hysteria start || true
 
 # 生成分享链接
 # 格式: hysteria2://password@host:port/?sni=sni_domain&insecure=1#name
