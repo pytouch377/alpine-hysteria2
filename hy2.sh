@@ -181,20 +181,20 @@ obfs:
   salamander:
     password: $OBFS_PASS
 
-# 内存优化QUIC配置
+# 内存优化QUIC配置 (针对128MB内存优化)
 quic:
-  initStreamReceiveWindow: 16777216    # 16MB - 内存优化
-  maxStreamReceiveWindow: 16777216     # 16MB
-  initConnReceiveWindow: 33554432      # 32MB - 内存优化
-  maxConnReceiveWindow: 33554432       # 32MB
+  initStreamReceiveWindow: 8388608     # 8MB - 极限优化
+  maxStreamReceiveWindow: 8388608      # 8MB
+  initConnReceiveWindow: 16777216      # 16MB - 极限优化
+  maxConnReceiveWindow: 16777216       # 16MB
   maxIdleTimeout: 30s                  # 缩短超时释放内存
   keepAlivePeriod: 15s
 
 ignoreClientBandwidth: true
 
 bandwidth:
-  up: 200 mbps
-  down: 50 mbps
+  up: 100 mbps
+  down: 100 mbps
 
 masquerade:
   type: proxy
@@ -256,13 +256,16 @@ if ! wget -q -O /usr/local/bin/hysteria "$URL" --no-check-certificate; then
 fi
 chmod +x /usr/local/bin/hysteria
 
+# 确保服务自动启动
+rc-update add hysteria default || true
+
 # 启动服务
 service hysteria start || true
 
 # 生成分享链接
-# 格式: hysteria2://password@host:port/?sni=sni_domain&insecure=1#name
+# 格式: hysteria2://password@host:port/?obfs=salamander&obfs-password=xxx&sni=xxx&insecure=1#name
 # 注意: 自签名证书需要 insecure=1
-SHARE_LINK="hysteria2://${MAIN_PASS}@${SERVER_IP}:${PORT}/?sni=www.bing.com&insecure=1#Hysteria2-Alpine"
+SHARE_LINK="hysteria2://${MAIN_PASS}@${SERVER_IP}:${PORT}/?obfs=salamander&obfs-password=${OBFS_PASS}&sni=www.bing.com&insecure=1#Hysteria2-Alpine"
 
 echo "------------------------------------------------------------------------"
 echo "hysteria2 已经安装完成"
@@ -270,6 +273,8 @@ echo "------------------------------------------------------------------------"
 echo "配置详情："
 echo "  端口: $PORT"
 echo "  密码: $MAIN_PASS"
+echo "  混淆: salamander"
+echo "  混淆密码: $OBFS_PASS"
 echo "  SNI : www.bing.com"
 echo "  证书: 自签名 (客户端需开启跳过证书验证/insecure)"
 echo ""
