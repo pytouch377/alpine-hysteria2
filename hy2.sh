@@ -9,7 +9,34 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 # 安装最小依赖
-apk add --no-cache curl openssl ca-certificates openrc
+apk add --no-cache curl openssl ca-certificates openrc chrony
+
+# 1. 配置时间同步 (关键：Hysteria 依赖准确的时间)
+echo "正在配置时间同步..."
+rc-update add chronyd default || true
+service chronyd start || true
+# 尝试立即同步一次
+chronyc -a makestep || true
+
+# 2. 检查并添加 Swap (关键：128MB 内存必须有 Swap)
+check_and_add_swap() {
+  if [ -f /swapfile ]; then
+    echo "Swap 文件已存在，跳过创建。"
+  elif free | grep -q "Swap:.*[1-9]"; then
+    echo "系统已有 Swap，跳过创建。"
+  else
+    echo "正在创建 512MB Swap 文件..."
+    # 使用 dd 创建 512MB 文件 (512 * 1024 = 524288)
+    dd if=/dev/zero of=/swapfile bs=1024 count=524288
+    chmod 600 /swapfile
+    mkswap /swapfile
+    swapon /swapfile
+    # 写入 fstab 实现开机挂载
+    echo "/swapfile swap swap defaults 0 0" >> /etc/fstab
+    echo "Swap 创建成功。"
+  fi
+}
+check_and_add_swap
 
 generate_random_password() {
   # 生成一个 16 字节的字母数字密码，避免 YAML 解析问题
@@ -118,12 +145,28 @@ rc-update add hysteria default || true
 # 启动服务
 service hysteria start || true
 
+# 获取公网 IP (尝试获取，失败则提示用户手动填写)
+PUBLIC_IP=$(curl -s https://api.ipify.org || echo "YOUR_SERVER_IP")
+
+# 生成分享链接
+# 格式: hysteria2://password@host:port/?sni=sni_domain&insecure=1#name
+# 注意: 自签名证书需要 insecure=1
+SHARE_LINK="hysteria2://${GENPASS}@${PUBLIC_IP}:40443/?sni=bing.com&insecure=1#Hysteria2-Alpine"
+
 echo "------------------------------------------------------------------------"
 echo "hysteria2 已经安装完成"
-echo "默认端口： 40443 ， 密码为： $GENPASS ，工具中配置：tls，SNI为： bing.com"
-echo "配置文件：/etc/hysteria/config.yaml"
-echo "已经随系统自动启动（若 openrc 可用）"
-echo "查看状态： service hysteria status"
-echo "重启： service hysteria restart"
-echo "请享用。"
+echo "------------------------------------------------------------------------"
+echo "配置详情："
+echo "  端口: 40443"
+echo "  密码: $GENPASS"
+echo "  SNI : bing.com"
+echo "  证书: 自签名 (客户端需开启跳过证书验证/insecure)"
+echo ""
+echo "分享链接 (复制到客户端导入):"
+echo "$SHARE_LINK"
+echo ""
+echo "系统状态："
+echo "  配置文件: /etc/hysteria/config.yaml"
+echo "  服务状态: service hysteria status"
+echo "  Swap状态: $(free -h | grep Swap | awk '{print $2}')"
 echo "------------------------------------------------------------------------"
