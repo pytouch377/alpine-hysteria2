@@ -44,7 +44,7 @@ check_and_add_swap
 
 log_info "开始安装 Hysteria2 (安全优化版)"
 
-# 安装必要软件
+# 安装系统依赖
 log_info "安装系统依赖..."
 apk update && apk add wget openssl
 
@@ -81,6 +81,42 @@ get_server_ip() {
 
 SERVER_IP=$(get_server_ip)
 
+# 3. 端口设置
+# 生成 20000-60000 之间的随机端口
+get_random_port() {
+  awk -v min=20000 -v max=60000 'BEGIN{srand(); print int(min+rand()*(max-min+1))}'
+}
+
+DEFAULT_PORT="$(get_random_port)"
+PORT=""
+
+while true; do
+  echo -n "请输入端口 (20000-60000) [默认: $DEFAULT_PORT]: "
+  read input_port
+  
+  if [ -z "$input_port" ]; then
+    PORT="$DEFAULT_PORT"
+    break
+  fi
+  
+  # 检查是否为数字
+  if ! echo "$input_port" | grep -qE '^[0-9]+$'; then
+    log_error "错误：请输入有效的数字。"
+    continue
+  fi
+  
+  # 检查范围
+  if [ "$input_port" -lt 20000 ] || [ "$input_port" -gt 60000 ]; then
+    log_error "错误：端口必须在 20000 到 60000 之间。"
+    continue
+  fi
+  
+  PORT="$input_port"
+  break
+done
+
+log_info "使用端口: $PORT"
+
 # 配置BBR
 configure_bbr() {
     if grep -q "bbr" /proc/sys/net/ipv4/tcp_congestion_control 2>/dev/null; then
@@ -116,7 +152,7 @@ chmod 644 /etc/hysteria/server.crt
 # 写入配置文件
 log_info "生成配置文件..."
 cat > /etc/hysteria/config.yaml << EOF
-listen: :40443
+listen: :$PORT
 
 tls:
   cert: /etc/hysteria/server.crt
@@ -205,21 +241,18 @@ if ! wget -q -O /usr/local/bin/hysteria "$URL" --no-check-certificate; then
     exit 1
 fi
 
-# 获取公网 IP (尝试获取，失败则提示用户手动填写)
-PUBLIC_IP=$(curl -s https://api.ipify.org || echo "YOUR_SERVER_IP")
-
 # 生成分享链接
 # 格式: hysteria2://password@host:port/?sni=sni_domain&insecure=1#name
 # 注意: 自签名证书需要 insecure=1
-SHARE_LINK="hysteria2://${GENPASS}@${PUBLIC_IP}:40443/?sni=bing.com&insecure=1#Hysteria2-Alpine"
+SHARE_LINK="hysteria2://${MAIN_PASS}@${SERVER_IP}:${PORT}/?sni=www.bing.com&insecure=1#Hysteria2-Alpine"
 
 echo "------------------------------------------------------------------------"
 echo "hysteria2 已经安装完成"
 echo "------------------------------------------------------------------------"
 echo "配置详情："
-echo "  端口: 40443"
-echo "  密码: $GENPASS"
-echo "  SNI : bing.com"
+echo "  端口: $PORT"
+echo "  密码: $MAIN_PASS"
+echo "  SNI : www.bing.com"
 echo "  证书: 自签名 (客户端需开启跳过证书验证/insecure)"
 echo ""
 echo "分享链接 (复制到客户端导入):"
