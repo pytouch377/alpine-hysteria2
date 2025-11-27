@@ -1,12 +1,16 @@
-#!/bin/sh
+#!/bin/bash
 
-set -eu
+# 颜色定义
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+BLUE='\033[0;34m'
+NC='\033[0m'
 
-# 检查是否为 root
-if [ "$(id -u)" -ne 0 ]; then
-  echo "请以 root 身份运行此脚本" >&2
-  exit 1
-fi
+# 日志函数
+log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
+log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
+log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
 # 安装最小依赖
 apk add --no-cache curl openssl ca-certificates openrc chrony
@@ -38,112 +42,168 @@ check_and_add_swap() {
 }
 check_and_add_swap
 
-generate_random_password() {
-  # 生成一个 16 字节的字母数字密码，避免 YAML 解析问题
-  tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 16 || true
+log_info "开始安装 Hysteria2 (安全优化版)"
+
+# 安装必要软件
+log_info "安装系统依赖..."
+apk update && apk add wget openssl
+
+# 生成随机密码
+generate_password() {
+    dd if=/dev/urandom bs=18 count=1 2>/dev/null | base64 | tr -d '/+=' | cut -c1-16
 }
 
-GENPASS="$(generate_random_password)"
+MAIN_PASS=$(generate_password)
+OBFS_PASS=$(generate_password)
 
-echo_hysteria_config_yaml() {
-  cat << EOF
+# 安全的IP获取函数
+get_server_ip() {
+    local ip=""
+    # 尝试多个IP查询服务
+    local services=(
+        "ipinfo.io/ip"
+        "api.ipify.org"
+        "icanhazip.com"
+        "ident.me"
+        "checkip.amazonaws.com"
+    )
+    
+    for service in "${services[@]}"; do
+        ip=$(curl -s -4 --connect-timeout 5 "$service" 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$')
+        if [ -n "$ip" ]; then
+            echo "$ip"
+            return 0
+        fi
+    done
+    
+    echo "请手动查询服务器IP"
+}
+
+SERVER_IP=$(get_server_ip)
+
+# 配置BBR
+configure_bbr() {
+    if grep -q "bbr" /proc/sys/net/ipv4/tcp_congestion_control 2>/dev/null; then
+        log_info "BBR 已启用"
+        return 0
+    fi
+    
+    cat >> /etc/sysctl.conf << 'EOF'
+net.ipv4.tcp_congestion_control = bbr
+net.ipv4.tcp_rmem = 4096 87380 33554432
+net.ipv4.tcp_wmem = 4096 65536 33554432
+net.core.somaxconn = 1024
+EOF
+
+    sysctl -p >/dev/null 2>&1 && log_info "BBR 配置完成"
+}
+
+configure_bbr
+
+# 创建目录结构
+log_info "创建目录结构..."
+mkdir -p /etc/hysteria /var/log/hysteria
+
+# 生成证书
+log_info "生成TLS证书..."
+openssl req -x509 -nodes -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+    -keyout /etc/hysteria/server.key -out /etc/hysteria/server.crt \
+    -subj "/CN=www.bing.com" -days 36500 >/dev/null 2>&1
+
+chmod 600 /etc/hysteria/server.key
+chmod 644 /etc/hysteria/server.crt
+
+# 写入配置文件
+log_info "生成配置文件..."
+cat > /etc/hysteria/config.yaml << EOF
 listen: :40443
 
-#有域名，使用CA证书
-#acme:
-#  domains:
-#    - test.heybro.bid #你的域名，需要先解析到服务器ip
-#  email: xxx@gmail.com
-
-#使用自签名证书
 tls:
   cert: /etc/hysteria/server.crt
   key: /etc/hysteria/server.key
 
 auth:
   type: password
-  password: "$GENPASS"
+  password: $MAIN_PASS
+
+obfs:
+  type: salamander
+  salamander:
+    password: $OBFS_PASS
+
+# 内存优化QUIC配置
+quic:
+  initStreamReceiveWindow: 16777216    # 16MB - 内存优化
+  maxStreamReceiveWindow: 16777216     # 16MB
+  initConnReceiveWindow: 33554432      # 32MB - 内存优化
+  maxConnReceiveWindow: 33554432       # 32MB
+  maxIdleTimeout: 30s                  # 缩短超时释放内存
+  keepAlivePeriod: 15s
+
+ignoreClientBandwidth: true
+
+bandwidth:
+  up: 200 mbps
+  down: 50 mbps
 
 masquerade:
   type: proxy
   proxy:
-    url: https://bing.com/
+    url: https://www.bing.com/
     rewriteHost: true
-EOF
-}
 
-echo_hysteria_autoStart(){
-  cat << 'EOF'
+resolver:
+  type: udp
+  udp:
+    addr: 8.8.8.8:53
+
+log:
+  level: info
+EOF
+
+# 服务文件
+log_info "配置系统服务..."
+cat > /etc/init.d/hysteria << 'EOF'
 #!/sbin/openrc-run
 
 name="hysteria"
-
 command="/usr/local/bin/hysteria"
 command_args="server --config /etc/hysteria/config.yaml"
-
-
-pidfile="/var/run/${name}.pid"
-
-command_background="yes"
+command_background=true
+pidfile="/var/run/hysteria.pid"
 
 depend() {
-        need networking
+    need net
+    after firewall
 }
 
+start_pre() {
+    checkpath --directory --mode 0755 /var/log/hysteria 2>/dev/null || mkdir -p /var/log/hysteria
+}
 EOF
-}
 
-# 根据架构选择合适的二进制（尽量覆盖常见架构）
-arch="$(uname -m || true)"
-case "$arch" in
-  x86_64|amd64)
-    bin_url="https://download.hysteria.network/app/latest/hysteria-linux-amd64"
-    ;;
-  aarch64|arm64)
-    bin_url="https://download.hysteria.network/app/latest/hysteria-linux-arm64"
-    ;;
-  armv7l|armv7)
-    bin_url="https://download.hysteria.network/app/latest/hysteria-linux-armv7"
-    ;;
-  *)
-    echo "不支持的 CPU 架构：$arch" >&2
-    exit 1
-    ;;
-esac
-
-mkdir -p /usr/local/bin
-echo "下载 hysteria 二进制： $bin_url"
-if ! curl -fsSL -o /usr/local/bin/hysteria "$bin_url"; then
-  echo "下载 hysteria 二进制失败" >&2
-  exit 1
-fi
-chmod +x /usr/local/bin/hysteria
-
-mkdir -p /etc/hysteria/
-
-# 生成 EC 私钥并使用该密钥创建自签名证书（不依赖 bash 的 process substitution）
-if ! openssl ecparam -name prime256v1 -genkey -noout -out /etc/hysteria/server.key; then
-  echo "生成私钥失败" >&2
-  exit 1
-fi
-
-if ! openssl req -x509 -new -key /etc/hysteria/server.key -sha256 -days 36500 -out /etc/hysteria/server.crt -subj "/CN=bing.com"; then
-  echo "生成自签名证书失败" >&2
-  exit 1
-fi
-
-# 写配置文件（密码用引号包裹以防特殊字符）
-echo_hysteria_config_yaml > "/etc/hysteria/config.yaml"
-
-# 写自启动脚本
-echo_hysteria_autoStart > "/etc/init.d/hysteria"
 chmod +x /etc/init.d/hysteria
 
-# 启用自启动到 default 运行级别
-rc-update add hysteria default || true
+# 根据架构下载并验证二进制文件
+ARCH=$(uname -m)
+case $ARCH in
+    x86_64) 
+        URL="https://github.com/apernet/hysteria/releases/latest/download/hysteria-linux-amd64"
+        ;;
+    aarch64) 
+        URL="https://github.com/apernet/hysteria/releases/latest/download/hysteria-linux-arm64"
+        ;;
+    armv7l) 
+        URL="https://github.com/apernet/hysteria/releases/latest/download/hysteria-linux-arm"
+        ;;
+    *) log_error "不支持的架构: $ARCH"; exit 1 ;;
+esac
 
-# 启动服务
-service hysteria start || true
+log_info "下载 Hysteria2 ($ARCH)..."
+if ! wget -q -O /usr/local/bin/hysteria "$URL" --no-check-certificate; then
+    log_error "下载失败，请检查网络连接"
+    exit 1
+fi
 
 # 获取公网 IP (尝试获取，失败则提示用户手动填写)
 PUBLIC_IP=$(curl -s https://api.ipify.org || echo "YOUR_SERVER_IP")
