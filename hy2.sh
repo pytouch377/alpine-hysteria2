@@ -193,7 +193,7 @@ quic:
 ignoreClientBandwidth: true
 
 bandwidth:
-  up: 100 mbps
+  up: 200 mbps
   down: 100 mbps
 
 masquerade:
@@ -208,7 +208,7 @@ resolver:
     addr: 8.8.8.8:53
 
 log:
-  level: info
+  level: error
 EOF
 
 # 服务文件
